@@ -92,18 +92,18 @@ spec:
           set -x
         fi
 
-        if [[ "$(params.sshPrivateKey)" != "" ]] ; then
+        #if [[ "$(params.sshPrivateKey)" != "" ]] ; then
 
-          if [[ ! -f ~/.ssh/$(params.sshPrivateKey) ]] ; then
-            echo "ssh keys for git repo not found"
-            echo "Check the pipeline service account has the secrets added"
-            echo "Task will fail"
-            exit 78
-          fi
+          #if [[ ! -f ~/.ssh/$(params.sshPrivateKey) ]] ; then
+            #echo "ssh keys for git repo not found"
+            #echo "Check the pipeline service account has the secrets added"
+            #echo "Task will fail"
+            #exit 78
+          #fi
 
-          eval `ssh-agent`
-          ssh-add ~/.ssh/$(params.sshPrivateKey)
-        fi
+          #eval `ssh-agent`
+          #ssh-add ~/.ssh/$(params.sshPrivateKey)
+        #fi
 
         CHECKOUT_DIR="$(workspaces.output.path)/$(params.subdirectory)"
 
