@@ -1,0 +1,38 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: commit-mqsc
+spec:
+  params:
+    - name: is-source-mqsc-path
+      type: string
+    - name: mq-config-mqsc-path
+      type: string
+    - name: uid
+      type: string
+    - name: sshPrivateKey
+      type: string
+  steps:
+    - image: gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.18.0
+      workingDir: $(workspaces.input.path)
+      script: |
+        eval `ssh-agent`
+        ssh-add ~/.ssh/$(params.sshPrivateKey)
+
+        timestamp=$(date +%s)
+
+        cp $(params.is-source-mqsc-path) $(params.mq-config-mqsc-path)/"${timestamp}-config.mqsc"
+
+        cd $(params.mq-config-mqsc-path)
+
+        git checkout -b master
+
+        git config user.email "tekton@example.com"
+        git config user.name $(params.uid)
+
+        git add "${timestamp}-config.mqsc"
+        git commit -m "Commiting mqsc"
+
+        git push origin master
+  workspaces:
+    - name: input

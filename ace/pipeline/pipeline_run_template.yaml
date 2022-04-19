@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: ACEPipelineRun
+  annotations:
+    description: |
+      To create a pipeline that deploys an ACE instance
+objects:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      name: ${NAME}
+      namespace: ${NAMESPACE}
+    spec:
+      serviceAccountName: pipeline
+      pipelineRef:
+        name: ${PIPELINE_REFERENCE}
+
+      params:
+        - name: is-source-repo-url
+          value: ${ACE_APP_SOURCE_GIT_URL}
+        - name: is-source-repo-private-key
+          value: id_${ACE_APP_SOURCE_SSH_PRIVATE_KEY_SECRET_NAME}
+
+        - name: is-infra-repo-url
+          value: ${ACE_INFRA_GIT_URL}
+        - name: is-infra-repo-private-key
+          value: id_${ACE_INFRA_SSH_PRIVATE_KEY_SECRET_NAME}
+        
+        - name: is-config-repo-url
+          value: ${ACE_CONFIG_REPO_URL}
+        - name: is-config-repo-private-key
+          value: id_${ACE_CONFIG_SSH_PRIVATE_KEY_SECRET_NAME}
+
+        - name: mq-source-repo-url
+          value: ${MQ_SOURCE_GIT_URL}
+        - name: mq-source-repo-private-key
+          value: id_${MQ_SOURCE_SSH_PRIVATE_KEY_SECRET_NAME}
+
+        - name: key-certs-secret-name
+          value: ${KEY_CERTS_SECRET_NAME}
+        - name: client-key
+          value: ${CLIENT_KEY}
+        - name: client-cert
+          value: ${CLIENT_CERT}
+        - name: ca-cert
+          value: ${CA_CERT}
+
+
+      workspaces:
+        - name: shared-workspace
+          persistentVolumeClaim:
+            claimName: ${PERSISTENT_VOLUME_CLAIM_NAME}
+
+parameters:
+  - name: NAME
+    description: Name of pipeline run
+  - name: NAMESPACE
+    description: Namespace in which to apply pipeline run
+  - name: PIPELINE_REFERENCE
+    description: Name of the pipeline
+  - name: ACE_APP_SOURCE_GIT_URL
+    description: SSH URL of the ACE application Source git repository
+  - name: ACE_INFRA_GIT_URL
+    description: SSH URL of the ACE infrastructure git repository
+  - name: ACE_CONFIG_REPO_URL
+    description: SSH URL of the ACE configuration git repository
+  - name: MQ_SOURCE_GIT_URL
+    description: SSH URL of the MQ Source repository
+  
+  - name: ACE_APP_SOURCE_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the ACE application source repository
+  - name: ACE_INFRA_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the ACE infra repository
+  - name: ACE_CONFIG_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the ACE configurations repository
+  - name: MQ_SOURCE_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the MQ source repository
+
+  - name: PERSISTENT_VOLUME_CLAIM_NAME
+    description: Name of the persistence volume used by the pipeline
+
+  - name: KEY_CERTS_SECRET_NAME
+    description: |
+      Name of the secret that contains client key, client 
+      certificate and CA certficate
+
+  - name: CLIENT_KEY
+    description: |
+      Name of the key within KEY_CERTS_SECRET_NAME that maps to
+      client key
+
+  - name: CLIENT_CERT
+    description: |
+      Name of the key within KEY_CERTS_SECRET_NAME that maps to
+      client certficate
+
+  - name: CA_CERT
+    description: |
+      Name of the key within KEY_CERTS_SECRET_NAME that maps to
+      CA certficate

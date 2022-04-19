@@ -1,0 +1,38 @@
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerTemplate
+metadata:
+  name: mq-build
+spec:
+  params:
+    - name: source-git-url
+    - name: source-repo-name
+
+  resourcetemplates:
+    - apiVersion: tekton.dev/v1beta1
+      kind: PipelineRun
+      metadata:
+        name: mq-build-$(tt.params.source-repo-name)-$(uid)
+      spec:
+        serviceAccountName: pipeline
+        pipelineRef:
+          name: mq-build
+
+        params:
+          - name: infra-git-url
+            value: git@github.ibm.com:cpat-int-samples/eaglebank-mq-infra.git
+          - name: infra-subdirectory
+            value: infra
+          - name: infra-sshPrivateKey
+            value: id_eaglebank-mq-infra
+
+          - name: source-git-url
+            value: $(tt.params.source-git-url)
+          - name: source-subdirectory
+            value: source
+          - name: source-sshPrivateKey
+            value: id_eaglebank-mq-config
+
+        workspaces:
+          - name: shared-workspace
+            persistentVolumeClaim:
+              claimName: mq-pipeline-build

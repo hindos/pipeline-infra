@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: MQPipelineRun
+  annotations:
+    description: |
+      To create a pipeline that deploys a MQ instance
+objects:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      name: ${NAME}
+      namespace: ${NAMESPACE}
+    spec:
+      serviceAccountName: pipeline
+      pipelineRef:
+        name: ${PIPELINE_REFERENCE}
+
+      params:
+        - name: infra-git-url
+          value: ${INFRA_GIT_URL}
+        - name: infra-sshPrivateKey
+          value: id_${INFRA_SSH_PRIVATE_KEY_SECRET_NAME}
+
+        - name: source-git-url
+          value: ${SOURCE_GIT_URL}
+        - name: source-sshPrivateKey
+          value: id_${SOURCE_SSH_PRIVATE_KEY_SECRET_NAME}
+
+        - name: queue-name
+          value: ${QUEUE_NAME}
+        
+        - name: CONTEXT
+          value: ${CONTEXT}
+
+        - name: DEPLOYMENT_PROPERTIES_PATH
+          value: ${DEPLOYMENT_PROPERTIES_PATH}
+
+        - name: MQ_SERVER_KEY_CERT_SECRET
+          value: ${MQ_SERVER_KEY_CERT_SECRET}
+        
+        - name: ca-cert-secret
+          value: ${CA_CERT_SECRET}
+
+        - name: MQ_SERVER_CERT_KEY
+          value: ${MQ_SERVER_CERT_KEY}
+
+        - name: MQ_SERVER_KEY_KEY
+          value: ${MQ_SERVER_KEY_KEY}
+          
+        - name: CA_CERT_KEY
+          value: ${CA_CERT_KEY}
+        
+        - name: TRACING_NS
+          value: ${TRACING_NS}
+        
+      workspaces:
+        - name: shared-workspace
+          persistentVolumeClaim:
+            claimName: ${PERSISTENT_VOLUME_CLAIM_NAME}
+
+parameters:
+  - name: NAME
+    description: Name of pipeline run
+  - name: NAMESPACE
+    description: Namespace to apply this pipeline run to
+  - name: PIPELINE_REFERENCE
+    description: Name of the pipeline
+  - name: INFRA_GIT_URL
+    description: SSH URL of the MQ Infrastructure repository
+  - name: SOURCE_GIT_URL
+    description: SSH URL of the MQ Source repository
+  - name: INFRA_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the MQ infrastructure repository
+  - name: SOURCE_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the MQ source repository
+  - name: CONTEXT
+    description: |
+      Build context of pipeline, path to mqsc directory
+  - name: DEPLOYMENT_PROPERTIES_PATH
+    description: |
+      The path where the deployment properties file is located
+  - name: MQ_SERVER_KEY_CERT_SECRET
+    description: |
+      Name of the secret containing the MQ cert in the namespace where MQ is being deployed
+  - name: CA_CERT_SECRET
+    description: Name of the secret containing the CA cert in the namespace where MQ is being deployed
+  
+  - name: MQ_SERVER_CERT_KEY
+    description: |
+      Key of the MQ certificate within the secret
+  - name: MQ_SERVER_KEY_KEY
+    description: |
+      Key of the MQ key cert within the secret
+  - name: CA_CERT_KEY
+    description: |
+      Key of the CA cert within the secret
+
+  - name: QUEUE_NAME
+    description: |
+      Name of the queue the pipeline will check exists and use to validate the queue manager is working correctly
+  - name: PERSISTENT_VOLUME_CLAIM_NAME
+    description: Name of the persistence volume used by the pipeline
+  - name: TRACING_NS
+    description: namespace where the operations dashboard MQ will trace to is located

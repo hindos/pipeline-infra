@@ -1,0 +1,44 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy-is
+spec:
+  params:
+  - name: is-infra-directory
+  - name: IMAGE
+  - name: release-name
+  - name: configurations
+  - name: TRACING_NS
+  - name: TRACING_ENABLED
+  steps:
+  - name: setup-custom-resource
+    image: image-registry.openshift-image-registry.svc:5000/$(context.taskRun.namespace)/yq-zip
+    workingDir: $(workspaces.input.path)
+
+    script: |
+      is_manifest_template=$(workspaces.input.path)/$(params.is-infra-directory)/IntegrationServer.yaml
+
+      mkdir -p $(workspaces.input.path)/integration_server
+      is_manifest_rendered=$(workspaces.input.path)/integration_server/IntegrationServer.yaml
+
+      cp $is_manifest_template $is_manifest_rendered
+
+      e=$(params.release-name) yq e -i '.metadata.name = env(e)' $is_manifest_rendered
+      e=$(params.IMAGE) yq e -i '.spec.pod.containers.runtime.image = env(e)'  $is_manifest_rendered 
+      e=$(params.TRACING_NS) yq e -i '.spec.tracing.namespace = env(e)'  $is_manifest_rendered
+      e=$(params.TRACING_ENABLED) yq e -i '.spec.tracing.enabled = env(e)'  $is_manifest_rendered
+
+      i=0
+      for configuration in $(params.configurations); do
+        i=$i config=$configuration yq e -i '.spec.configurations[env(i)] = env(config)' $is_manifest_rendered
+        i=$(( i + 1))
+      done
+
+  - name: deploy-integration-server
+    image: quay.io/openshift/origin-cli:latest
+    workingDir: $(workspaces.input.path)
+    command: ["oc"]
+    args: ["apply", "-f", "integration_server/IntegrationServer.yaml"]
+
+  workspaces:
+    - name: input

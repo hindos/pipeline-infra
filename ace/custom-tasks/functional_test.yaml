@@ -1,0 +1,135 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: functional-test
+spec:
+  params:
+    - name: previous-is-genenration
+    - name: previous-deployment-revision
+    - name: release-name
+    - name: is-source-directory
+    - name: key-certs-secret-name
+    - name: client-key
+    - name: client-cert
+    - name: ca-cert
+  steps:
+    - name: wait-till-deployment
+      image: quay.io/openshift/origin-cli:latest
+      env:
+        - name: RELEASE_NAME
+          value: $(params.release-name)
+        - name: PREVIOUS_IS_GENERATION
+          value: $(params.previous-is-genenration)
+        - name: PREVIOUS_DEPLOYMENT_REVISION
+          value: $(params.previous-deployment-revision)
+      script: |
+        set -e
+
+        SLEEP_TIME_SEC=10
+        RETRIES=10
+
+        get_current_integration_server_generation() {
+          oc get integrationserver $RELEASE_NAME -o jsonpath='{$.metadata.generation}'
+        }
+
+        integration_spec_has_changed() {
+          if [[ -z $PREVIOUS_IS_GENERATION ]]; then
+            return 1
+          fi
+
+          current_is_generation=$(get_current_integration_server_generation)
+          test $current_is_generation -gt $PREVIOUS_IS_GENERATION
+        }
+
+        wait_until() {
+          condition=$1
+          message=$2
+
+          retries=$RETRIES
+          until $condition || [[ "$retries" -eq 0 ]]; do
+            retries=$((retries - 1))
+
+            sleep $SLEEP_TIME_SEC
+          done
+
+          if [[ "$retries" -eq 0 ]]; then
+            echo $message
+            exit 1
+          fi
+        }
+
+        get_current_deployment_revision() {
+          oc get deploy -l app.kubernetes.io/instance=$RELEASE_NAME -o jsonpath='{$.items[0].metadata.annotations.deployment\.kubernetes\.io/revision}'
+        }
+
+        deployment_is_current() {
+          current_deployment_revision=$(get_current_deployment_revision)
+
+          test $current_deployment_revision -gt $PREVIOUS_DEPLOYMENT_REVISION
+        }
+
+        resolve_deployment() {
+          deployment=$(oc get deploy -l app.kubernetes.io/instance=$RELEASE_NAME -o jsonpath='{$.items[0].metadata.name}' 2>/dev/null) 
+        }
+
+
+        replicas_are_updated() {
+          local replicas=$(oc get deploy -l app.kubernetes.io/instance=$RELEASE_NAME -o jsonpath='{$.items[0].status.replicas}')
+          test $replicas -eq 1
+        }
+
+        desired_replicas_same_as_actual_replicas() {
+          local desired_replicas=$1
+
+          test $desired_replicas -eq $(oc get pods --no-headers -l app.kubernetes.io/instance=$RELEASE_NAME | wc -l)
+        }
+
+        if integration_spec_has_changed; then
+          wait_until deployment_is_current "Updated deployment not resolved"
+        fi
+
+        wait_until resolve_deployment "Could not find deployment"
+        oc rollout status deployment $deployment
+
+        desired_replicas=$(oc get deploy -l app.kubernetes.io/instance=$RELEASE_NAME -o jsonpath='{$.items[0].spec.replicas}')
+        wait_until "desired_replicas_same_as_actual_replicas $desired_replicas" "Numner of pods does not match desired replicas"
+
+    - name: resolve-route
+      image: quay.io/openshift/origin-cli:latest
+      script: |
+        oc get routes -l app.kubernetes.io/instance=$(params.release-name) -o jsonpath='{.items[?(@.spec.port.targetPort=="https")].spec.host}' | tee /shared/route.txt
+      volumeMounts:
+        - name: shared-volume
+          mountPath: /shared
+    
+    - name: run-test
+      image: image-registry.openshift-image-registry.svc:5000/$(context.taskRun.namespace)/newman
+      script: |
+        #!/bin/bash
+
+        set -ex
+
+        route=$(cat /shared/route.txt)
+        test_file=$(workspaces.workspace.path)/$(params.is-source-directory)/test/newman/test.json
+        if [[ -e $test_file ]]; then
+          newman run \
+              --ssl-extra-ca-certs /client-certs/$(params.ca-cert) \
+              --ssl-client-key /client-certs/$(params.client-key) \
+              --ssl-client-cert /client-certs/$(params.client-cert) \
+              --env-var host=$route \
+              $test_file
+        fi
+      volumeMounts:
+        - name: shared-volume
+          mountPath: /shared
+        - name: certs
+          readOnly: true
+          mountPath: "/client-certs"
+  volumes:
+    - name: shared-volume
+      emptyDir: {}
+    - name: certs
+      secret:
+        secretName: $(params.key-certs-secret-name)
+  workspaces:
+    - name: workspace

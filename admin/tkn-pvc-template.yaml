@@ -1,0 +1,27 @@
+# example run: oc process -n mq-2 -f tkn-pvc-template.yaml -p NAME=test1 -p ACCESS_MODE=ReadWriteMany -p STORAGE_CLASS=ibmc-file-gold-gid | oc apply -f -
+
+apiVersion: v1
+kind: Template
+metadata:
+  name: PersistentVolumeClaim
+objects:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: ${NAME}
+  spec:
+    accessModes:
+    - ${ACCESS_MODE}
+    resources:
+      requests:
+        storage: 2Gi
+    storageClassName: ${STORAGE_CLASS}
+parameters:
+- name: NAME
+- name: ACCESS_MODE
+  description: |
+    Access mode of the storage, for example: ReadWriteMany
+- name: STORAGE_CLASS
+  description: |
+    Storage class to be used, for example: ibmc-file-gold-gid
+    

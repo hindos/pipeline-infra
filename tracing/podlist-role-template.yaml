@@ -1,0 +1,18 @@
+# Apply in the namespace where your tracing dashbaord is deployed
+# This is used by the pipeline to list the operations dashbaord instances
+apiVersion: v1
+kind: Template
+metadata:
+  name: tracing-podlist-role
+objects:
+- kind: Role
+  apiVersion: rbac.authorization.k8s.io/v1
+  metadata:
+    name: tracing-podlist-role
+    namespace: ${NAMESPACE_OD}
+  rules:
+  - apiGroups: ["integration.ibm.com"]
+    resources: ["operationsdashboards"]
+    verbs: ["get", "list"]
+parameters:
+  - name: NAMESPACE_OD

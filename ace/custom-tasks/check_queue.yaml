@@ -1,0 +1,71 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: check-queue
+spec:
+  params:
+    - name: mq-end-point-policy-file
+    - name: mq-queue-name
+    - name: is-config-directory
+    - name: number-of-retries
+      default: "0"
+    - name: exit-on-fail
+      default: "no"
+  results:
+    - name: queue-exists
+  steps:
+    - image: quay.io/openshift/origin-cli:latest
+      workingDir: $(workspaces.input.path)
+      name: check-mq-queue
+      script: |
+        get_queue () {
+          oc exec $1 -n $2 -c qmgr -- bash -c 'echo "DISPLAY QL(*)" | runmqsc' | grep "QUEUE($3)" > /dev/null
+        }
+
+        get_clus_queue () {
+          oc exec $1 -n $2 -c qmgr -- bash -c 'echo "DISPLAY QCLUSTER(*)" | runmqsc' | grep "QUEUE($3)" > /dev/null
+        }
+        ls -lrt ; pwd ; 
+        
+
+
+        queue_manager_hostname=$(xmllint --xpath "/policies/policy/queueManagerHostname/text()" $(params.is-config-directory)/$(params.mq-end-point-policy-file))
+
+        IFS='.'; svc_tokens=($queue_manager_hostname); unset IFS
+        mq_service_name=${svc_tokens[0]}
+        mq_namespace=${svc_tokens[1]}
+
+        mq_release_name=$(oc get svc $mq_service_name -n $mq_namespace -o jsonpath='{.metadata.labels.app\.kubernetes\.io/instance}')
+        mq_active_qmgr=$(oc exec $mq_release_name-ibm-mq-0 -n $mq_namespace -- dspmq -x | sed -E 's/INSTANCE\((.*)\).*MODE\(Active\)/\1/gm;t;d' | xargs)
+
+        retries=$(params.number-of-retries)
+
+        queue_exists=""
+        test_check() {
+          if get_queue $mq_active_qmgr $mq_namespace $(params.mq-queue-name); then
+            queue_exists="yes"
+            return 0
+          elif get_clus_queue $mq_active_qmgr $mq_namespace $(params.mq-queue-name); then
+            queue_exists="yes"
+            return 0
+          else
+            queue_exists="no"
+            return 1
+          fi
+        }
+
+        until test_check || [[ $retries -eq 0 ]]; do
+          retries=$(($retries-1))
+          echo "retrying...left $retries retries"
+          
+          sleep 20
+        done
+
+        echo -n $queue_exists > $(results.queue-exists.path)
+
+        if [[ $queue_exists == 'no' ]] && [[ $(params.exit-on-fail) == 'yes' ]]; then
+          exit 1
+        fi
+
+  workspaces:
+    - name: input

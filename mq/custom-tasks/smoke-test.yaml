@@ -1,0 +1,125 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: smoke-test
+spec:
+  workspaces:
+  - name: source
+  params:
+    - name: deployment-properties-path
+      type: string
+      description: The path where the deployment properties is located
+    - name: queue-name
+      type: string
+  steps:
+    - name: check-stateful-set-deployed
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: $(workspaces.source.path)/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          #!/bin/bash
+
+          set -ex
+
+          pass="roll out complete"
+          count=0
+
+          echo "Deployments: $(params.deployment-properties-path)"
+
+          source $(params.deployment-properties-path)
+           
+          statefulset_name=`oc get StatefulSet --selector=app.kubernetes.io/instance=$RELEASE_NAME -o custom-columns=:metadata.name --no-headers`
+          if [[ -z ${statefulset_name} ]]
+          then
+              echo "Stateful set does not exist"
+              exit 1
+          fi
+          echo "statefulset name is: $statefulset_name"
+
+          while :
+          do
+              statefulset_name=`oc get StatefulSet --selector=app.kubernetes.io/instance=$RELEASE_NAME -o custom-columns=:metadata.name --no-headers`
+              status=`oc rollout status StatefulSet $statefulset_name | tr -d \"`
+
+              if [[ "$status" == *"$pass"* ]]
+              then
+                  echo "Pods are deployed."
+                  break
+              elif [ "$count" -eq "6" ]
+              then
+                  echo "Pods failed to deploy after 5 minutes."
+                  exit 1
+              else
+                  echo "Trying again"
+                  sleep 10
+              fi
+
+              count=[$count + 1]
+          done
+
+    - name: put-message-on-queue
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: $(workspaces.source.path)/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          set -e
+
+          source $(params.deployment-properties-path)
+
+          podname=$(oc get pods --selector=app.kubernetes.io/instance=$RELEASE_NAME -o custom-columns=POD:.metadata.name --no-headers | head -n 1)
+          echo "podname: $podname"
+
+          queue=$(params.queue-name)
+          echo "queue name: $queue"
+
+          echo "Sleep before test to make sure QMGR is up"
+          sleep 20
+
+          echo "Print the queue details: ..."
+          echo ""
+          oc exec $podname -- /bin/bash -c "echo \"DISPLAY QL($queue) ALL\" | runmqsc" > checkQ.txt 2>&1
+          cat checkQ.txt
+
+
+          oc exec $podname -- /bin/bash -c "echo \"hello-world\" | /opt/mqm/samp/bin/amqsput $queue" > putMessage.txt 2>&1
+
+          cat putMessage.txt
+
+          echo "----------"
+
+          fail="reason code"
+
+          if grep -q "$fail" putMessage.txt; then
+              exit 1
+          else
+              echo "Message has been successfully put the queue."
+          fi
+    - name: get-message-on-queue
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: $(workspaces.source.path)/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          set -e
+
+          source $(params.deployment-properties-path)
+
+          podname=$(oc get pods --selector=app.kubernetes.io/instance=$RELEASE_NAME -o custom-columns=POD:.metadata.name --no-headers | head -n 1)
+          echo "podname: $podname"
+
+          queue=$(params.queue-name)
+          echo "queue name: $queue"
+
+          oc exec $podname  -c qmgr -- /opt/mqm/samp/bin/amqsget $queue > getMessage.txt 2>&1
+
+          cat getMessage.txt
+
+
+          if grep -q "hello-world" getMessage.txt; then
+              echo "Message has been found on the queue."
+          else
+              echo "Error: Message has not been retrieved from the queue."
+              exit 1
+          fi

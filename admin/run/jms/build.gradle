@@ -1,0 +1,32 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group 'com.ibm.cpat'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.ibm.mq:com.ibm.mq.allclient:9.1.4.0'
+    implementation 'javax.jms:javax.jms-api:2.0.1'
+
+    testImplementation platform('org.junit:junit-bom:5.6.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+
+    testImplementation 'org.assertj:assertj-core:3.15.0'
+    testImplementation 'org.mockito:mockito-core:3.3.3'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+application {
+    mainClass = 'com.ibm.cpat.jms.Driver'
+}

@@ -1,0 +1,86 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: custom-ldap
+  labels:
+    build: ldap-build
+spec:
+  workspaces:
+    - name: shared-workspace
+
+  params:
+    - name: ldap-git-url
+      type: string
+      description: url of the git repo for the code of deployment
+    - name: ldap-subdirectory
+      type: string
+      description: directory where the content will be checkout to
+      default: ldap
+    - name: ldap-sshPrivateKey
+      description: the private key to use
+      type: string
+
+    - name: IMAGE
+      default: image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(context.pipeline.name):2.0
+
+    - name: DOCKERFILE
+      type: string
+      default: Dockerfile
+    - name: CONTEXT 
+      type: string
+      default: $(workspaces.source.path)/ldap/ldap/create-ldap/
+      description: build context
+
+
+  tasks:
+    - name: fetch-ldap-source
+      taskRef:
+        name: git-clone
+        kind: Task
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+      params:
+        - name: url
+          value: $(params.ldap-git-url)
+        - name: subdirectory
+          value: $(params.ldap-subdirectory)
+        - name: deleteExisting
+          value: "true"
+        - name: revision
+          value: "master"
+        - name: sshPrivateKey
+          value: id_$(params.ldap-sshPrivateKey)
+
+    - name: build-ldap-image
+      taskRef:
+        name: buildah
+        kind: ClusterTask
+      params:
+        - name: TLSVERIFY
+          value: "false"
+        - name: IMAGE
+          value: $(params.IMAGE)
+        - name: DOCKERFILE
+          value: $(params.DOCKERFILE)
+        - name: CONTEXT
+          value: $(params.CONTEXT)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      runAfter:
+        - fetch-ldap-source
+
+    - name: deploy-ldap
+      taskRef:
+        name: deploy-ldap
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      params:
+        - name: image
+          value: $(params.IMAGE)
+        - name: ldap-yaml-path
+          value: $(params.CONTEXT)
+      runAfter:
+        - build-ldap-image

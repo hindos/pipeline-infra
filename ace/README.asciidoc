@@ -1,0 +1,730 @@
+= Pipeline: Integration Server with MQ
+:toc:
+:source-highlighter: pygments
+:toclevels: 3
+
+
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+[WARNING]
+====
+Content is under review
+====
+
+This documentation describes a Tekton based pipeline (to be referred to as **IS Pipeline** henceforth) that builds and deploys an ACE message flow. The flow integrates with an **MQ Instance**.
+
+ifdef::env-github[]
+++++
+<p align="center">
+  <img width="460" height="300" src="readme_images/ace_mq.svg">
+</p>
+++++
+endif::[]
+
+ifndef::env-github[]
+image::readme_images/ace_mq.svg[width=350, align="center"]
+endif::[]
+
+An example of such an message flow is a RESTful service that receives a payload via a POST method. The flow __puts__ the payload on a queue in the **MQ instance**.
+
+One of the step on the **IS pipeline** is to check whether the destination queue exists on the **MQ instance**. If the the queue does not exists, then the definition of the queue will be placed on a repository, designated as the **MQ Config Repository**. It is expected that a separate pipeline (referred to as **MQ Pipeline**) is active that listens for changes on the **MQ Config Repository**. The **MQ pipeline** is expected to update the deployment of the **MQ instance**, taking account of the definition of a new queue placed by the **IS pipeline**. 
+
+
+**NOTE this concept of pipeline integration is an example that might be of use in situations where a group of ACE applications have a dedicated queue manager, or queue managers, in a lower environment on the path to live. It is intended to show what can be possible with Tekton and is NOT a recommendation for how ACE and MQ pipelines should be configured with a highly shared MQ or in production environments.**
+
+== Repositories
+
+Based on the separation of concerns, for Integration Server deployments, there are three repositories:
+
+Infrastructure::
+
+Maintains the pipeline definitions and any infrastructure definition files related to the deployment of an Integration Server. The pipeline and the infrastructure files are __**not**__ meant to be specfic for an Integration Server deployment but generic enough to be applicable to many similar Integration Servers.
++
+For instance, for Tekton based pipelines, the repository will contain `Pipeline` and any custom `Task` definitions. It may also contain a `PipelineRun` definition with templated parameters for any input that the `Pipeline` takes.
++
+As for infrastructure definition, the repository contains templated Custom Resource deifition for `IntegrationServer`, `Configuration` and `Dockerfile` for custom Integration Server image.
++
+The repository is maintained by __DevOps Administrator__ for an organisation. Changes to the content of the repository are expected to be slow paced and controlled. Once set up and tested, they are likely to be used by many different deployements of Integration Servers. 
+
+[[Configuration]] Configuration::
+
+Maintains the configuration files for Integration Servers for an organisation.
++
+For example, it will contain Policy projects, `setdbparms`, `serverconf` etc. These are configurations set up for a Integration team, by the __Integration Administrator__ of the team. Integration Server configurations, although specific, can be re-used by more than one Integration Servers. For example, the following `serverconf`:
++
+[source,yaml]
+----
+Defaults:
+  policyProject: 'DefaultPolicies'
+BrokerRegistry:
+  mqKeyRepository: '/home/aceuser/keystores/ace-server'
+----
++
+can be used by any Integration Server that define the default policy project to be named `DefaultPolicies` and the MQ key repository stem path to be as `/home/aceuser/keystores/ace-server`. Another example, is of a MQ Endpoint policy:
++
+[source,xml]
+----
+<?xml version="1.0" encoding="UTF-8"?>
+<policies>
+  <policy policyType="MQEndpoint" policyName="QM1" policyTemplate="MQEndpoint">
+    <connection>CLIENT</connection>
+    <destinationQueueManagerName>QM1</destinationQueueManagerName>
+    <queueManagerHostname>eaglebank-mq-ibm-mq.mq</queueManagerHostname>
+    <listenerPortNumber>1414</listenerPortNumber>
+    <channelName>DEV.APP.SVRCONN</channelName>
+    <securityIdentity>customer-details</securityIdentity>
+    <useSSL>true</useSSL>
+    <SSLPeerName></SSLPeerName>
+    <SSLCipherSpec>ECDHE_RSA_AES_256_CBC_SHA384</SSLCipherSpec>
+  </policy>
+</policies>
+----
++
+here, the __Integration Administrator__ defines the MQ Endpoint policy that is used by a set of Integration Servers. The definition above specifies the host name of the **MQ Instance**, the channel name, security details such as use of SSL and specific Cipher Specification. These are concern of __Integration Administrator__ of the organisation and not necessarily of an __Integration Server Developer__.
++
+Changes to this repository is expected to be faster than the **Integration** repository, but relatively slower than the **Source** repository (explained next).
+
+Source::
+
+Contains the source code of the Integration Server message flow. These usually uploaded from ACE toolkit. 
++
+The repository also contains deployment properties, which includes
++
+--
+* Application Name of the message flow
+
+* Desired release name of the Integration Server
+
+* Required configurations of the Integration Server.
++
+The configurations will refer to items on the configuration repository.
+
+* MQ properties which specifies the queues required by the message flow.
+
+* A `config.mqsc` file, that defines the queues required by the message flow, in case the MQ instance does not have them.
+--
++
+The repository is maintained by an __Integration Server Developer__. Changes to this repository is expected to be frequent as message flows get updated and added.
+
+MQ Config::
+
+Contains MQSC files that defines MQ objects such as queues and channels. A **MQ Pipeline** is expected to watch for changes in this repository.
+
+== Pipeline
+
+=== Overview
+
+The pipeline can be depicted as footnote:[This is a simplified depiction of the pipeline, reducing the dependencies with help of the graphviz library]:
+
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/ace_pipeline.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/ace_pipeline.svg[align="center"]
+endif::[]
+
+The pipeline is defined in link:pipeline/pipeline.yaml[pipeline.yaml]. A pipeline run is defined in link:pipeline/pipeline_run.yaml[pipeline_run.yaml]
+
+There are few tasks in the pipeline, where some tasks have others as dependencies. For example, `build-is-image` task, which is responsible for building the Integration Server image, depends on 
+
+* `generate-bar` task, which is responsible for generating the BAR file, and
+
+* `clone-is-infra` task, which is responsible for cloning the **Infrastructure**.
+
+Several tasks can execute in the same time if their dependencies have already been executed. This includes tasks, such as `clone-is-source`, `clone-is-infra` and `clone-is-config`, which do not have any dependencies.
+
+To understand the pipeline, we can segment it like the following
+
+. Building the BAR
++
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/generate_bar.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/generate_bar.svg[align="center"]
+endif::[]
++
+The BAR file is created from the Integration Server source code, maintained in the **Source Repository**. Required deployment properties, such as name of the ACE project files, are defined in the **Source Repository** as well. 
++
+Task runs:
++
+`clone-is-source`:: 
+is done with a run of custom task, <<git-clone, `git-clone`>>
++
+`resolve-props`:: 
+is done with a run of custom task, <<resolve-props, `resolve-props`>>
++
+`generate-bar`::
+is done with a run of custom task, <<generate-bar, `generate-bar`>>
+
+. Deploying the configurations
++
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/deploy_config.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/deploy_config.svg[align="center"]
+endif::[]
++
+A set of custom resources, `Configuration`, are created based on the requirements of the message flow. The list of requirements resolved by the `resolve-props` task run. The source of the configurations are maintained in **Configuration Repository**, and the templates for the Configuration custom resource are maintained in the **Infrastructure Repository**.
++
+Task runs:
++
+`clone-is-infra`, `clone-is-config`:: 
+are done with a run of custom task, <<git-clone, `git-clone`>>
++
+`resolve-props`:: 
+is done with a run of custom task, <<resolve-props, `resolve-props`>>
++
+`deploy-config`::
+is done with a run of custom task, <<deploy-config, `deploy-config`>>.
+
+. Building the image
++
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/build_is_image.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/build_is_image.svg[align="center"]
+endif::[]
++
+The custom image for the Integration Server is built based on the BAR file. The Dockerfile is defined in the **Integration Repository**.
++
+Task runs:
++
+`clone-is-infra`:: 
+is done with a run of custom task, <<git-clone, `git-clone`>>
++
+`generate-bar`::
+is done with a run of custom task, <<generate-bar, `generate-bar`>>
++
+`build-is-image`::
+is done with a run of cluster task, link:https://github.com/tektoncd/catalog/tree/master/task/buildah/0.2[`buildah`].
+
+. Deploying Integration Server
++
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/deploy_is.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/deploy_is.svg[align="center"]
+endif::[]
++
+Deploying of the Integration Server requires the image. It also requires that all the required **Configuration** objects have been deployed. 
++
+This pipeline, which deploys an Integration Server that puts messages on a queue, requires that the queue exists on the **Queue Manager**. A check is done with the task run, `check-queue`. The required queue is specified a property. The **MQ Instance** to which the Integration Server connects to can be resolved through the MQ Endpoint Policy, which is maintained in the **Configuration Repository**.
++
+If the queue exists, deployment can go ahead with the task run, `deploy-is`. The task run executes conditionally on the result of the task run, `check-queue`.
++
+Task runs:
++
+`clone-is-config`:: 
+is done with a run of custom task, <<git-clone, `git-clone`>>
++
+`resolve-props`:: 
+is done with a run of custom task, <<resolve-props, `resolve-props`>>
++
+`generate-bar`::
+is done with a run of custom task, <<generate-bar, `generate-bar`>>
++
+`deploy-config`::
+is done with a run of custom task, <<deploy-config, `deploy-config`>>
++
+`check-queue`::
+is done with a run of custom task, <<check-queue, `check-queue`>>
++
+`build-is-image`::
+is done with a run of cluster task, link:https://github.com/tektoncd/catalog/tree/master/task/buildah/0.2[`buildah`].
++
+`deploy-is`::
+is done with a run of cluster task custom task, <<deploy-is, `deploy-is`>>.
+
+. Deploy Integration Server awaiting creation of queue
++
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/deploy_is_awaiting_queue.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/deploy_is_awaiting_queue.svg[align="center"]
+endif::[]
+
++
+If the task run of `check-queue` returns "no" to indicate the the required queue does not exists on the **Queue Manager**, the task run `clone-mq-config` is executed. This task run clones the **MQ Config Repository**. Task run, `commit-mqsc`, is excuted next - which pushes an MQSC file that defines the desired queue on the **MQ Config Repository**. This pipepline assumes that a watch is set up on the **MQ Config Repository**, and the **MQ Pipeline** is executed for any change is made to the repository.
++
+Task run, `wait-for-queue`, is executed thereafter. This task run is similar to that of `check-queue`, but it repeatedly checks for the desired queue (up to a limit).
++
+If the task run, `wait-for-queue`, completes successfully - which indicates that the desired queue is created on the **MQ Instance**, deployment of the Integration Server can go ahead. This is done by the task run, `deploy-is-awaiting-queue`, which is run of the `deploy-is` custom task. The task requires the **Configuration**s and Integration Server image to be ready before executing.
++
+Task runs:
++
+`deploy-config`::
+is done with a run of custom task, <<deploy-config, `deploy-config`>>
++
+`check-queue`::
+is done with a run of custom task, <<check-queue, `check-queue`>>
++
+`build-is-image`::
+is done with a run of cluster task, link:https://github.com/tektoncd/catalog/tree/master/task/buildah/0.2[`buildah`].
++
+`clone-mq-config`:: 
+is done with a run of custom task, <<git-clone, `git-clone`>>
++
+`commit-mqsc`::
+is done with a run of custom task, <<commit-mqsc, `commit-mqsc`>>
++
+`wait-for-queue`::
+is done with a run of custom task, <<check-queue, `check-queue`>>
++
+`deploy-is-awating-queue`::
+is done with a run of custom task, <<deploy-is, `deploy-is`>>
+
+
+=== The workspace
+
+We are going to use a single workspace, `shared-workspace`. All the tasks will make use of this shared workspace, but may only read/write from/to a sub-folder within the workspace.
+
+=== The Custom Tasks
+
+==== [[git-clone]] Git Clone (link:../tasks/git-clone.yaml[git-clone.yaml])
+
+The parameters, workspace and results are same as that of the cluster task, link:https://github.com/tektoncd/catalog/tree/master/task/git-clone/0.2[git-clone]. But as we use a modified version of the task, which optionally takes the following parameter:
+
+.Additional parameter to cluster task, `git-clone`
+[cols="2,3,5"]
+|===
+| Type | Name | Description
+
+| Parameter
+| `sshPrivateKey`
+| The name of the private key to be used when cloning. 
+|===
+
+[sidebar]
+.Reason for the using a custom `git-clone` tasks
+--
+
+We need to clone multiple repositories in this pipeline (**Infrastructure**, **Source**, **Configurations** and optionally, the **MQ Config** repository).  For each repository we use a unique SSH keypair. The approach is explained here: link:https://www.openshift.com/blog/private-git-repositories-part-2a-repository-ssh-keys[Repository SSH Keys].
+
+For each repository we upload the public key as a Deploy Key. We create a secret with the private key as decribed here: link:https://github.com/tektoncd/pipeline/blob/master/docs/auth.md#configuring-ssh-auth-authentication-for-git[Configuring `ssh-auth` authentication for Git]. We have a template for the secret which can be used for this purpose, see link:../admin/ssh-key-secret.yaml[ssh-key-secret.yaml]
+
+The service account that runs the pipeline (in our case `pipeline`) need to refer to the secrets that contains the private keys of the all the repositories. Since we are to clone multiple repositories, we need to set multiple secrets. They keys are mounted on the filesystem of the tasks according to link:https://github.com/tektoncd/pipeline/blob/master/docs/auth.md#ssh-auth-for-git[ssh-auth-for-git]. 
+
+Given multiple keys mounted, the vanilla `git-clone` cluster task, does not know which to use during cloning. If we use the cluster task as is, then only one of our repository gets successfully cloned. The rest fails with ssh key error.
+
+To rememdy, we use a modified version of the `git-clone` cluster task, see link:https://github.com/saadlu/catalog/commit/8c731b5f9a903af12989296f9e35c847d4262852[fork of `git-clone`]. We added a parameter that names the private key to use. If the parameter is specified, we start and add the key in a `ssh-agent`. Note that this is a hack solution - and at the time the simpliest one we can think of. 
+
+As noted in link:https://github.com/tektoncd/pipeline/blob/master/docs/auth.md#ssh-auth-for-git[ssh-auth-for-git], private key from secret (which has type `type: kubernetes.io/ssh-auth`), is mounted on the `~/.ssh` directory with the name a `id_` appended withe name of the secret. See link:pipeline/pipeline_run.yaml[pipeline_run.yaml] to see examples.
+--
+
+[NOTE]
+====
+We might want to take a look at the Go program of the `git-init` task: link:https://github.com/tektoncd/pipeline/blob/master/cmd/git-init/main.go[git-init/main.go]. And investigate if there is an approach to set the private key in the `git` package: link:https://github.com/tektoncd/pipeline/blob/master/pkg/git/git.go[git.go]
+====
+
+All of the four `git-clone` tasks writes to the same workspace, `shared-workspace`, but on a different sub-folder.
+
+==== [[resolve-props]] Resolving the properties (link:custom-tasks/resolve_props.yaml[resolve_props.yaml])
+
+[cols="1,3,4"]
+|===
+| Type | Name | Description
+
+| Workspace
+| `input`
+| The workspace
+
+| Parameters
+
+| `is-source-directory` 
+| Subfolder within the workspace where **Source Repository** is cloned into. 
+
+
+.10+| Results
+
+| `is-application-names` 
+| Names of the message flow applications
+
+| `release-name`
+| The desired release name for the `Integration Server`
+
+| `is-configuration-keystores`
+| List of __keystore__ type `Configuration` objects to be created 
+
+| `is-configuration-trustores`
+| List of __truststore__ type `Configuration` objects to be created
+
+| `is-configuration-setdbparms`
+| List of __setdbparms__ type `Configuration` objects to be created
+
+| `is-configuration-serverconf`
+| List of __serverconf__ type `Configuration` objects to be created
+
+| `is-configuration-policyproject`
+| List of __Policy Project__ type `Configuration` objects to be created
+
+
+| `mq-queue-name`
+| Name of the queue on which the `Integration Server` puts (or get) messages
+
+| `mq-end-point-policy-file`
+| Name of the MQ EndPoint policy file that details the connection to the **MQ Instance**
+
+| `registry-host`
+| Internal hostname of the OpenShift registry
+
+|===
+
+Pipeline properties which details the specific of a deployment is maintained on the **Source Repository** in a file names, `pipeline_properties.yaml`. Following is an example:
+
+[source,yaml]
+----
+integrationServer:
+  applicationNames:
+    - CreateCustomerDetails
+  releaseName: create-customer-details
+  configurations:
+    setdbparms:
+      - dbparms.txt
+    serverconf:
+      - serverconf.yaml
+    policyproject:
+      - DefaultPolicies
+    keystore:
+      - ace-server.kdb
+      - ace-server.sth
+      - ace-server.jks
+    truststore:
+      - ca.jks
+mq:
+  queueName: CREATE.CUSTOMER.Q.V1
+  endPointPolicyFile: DefaultPolicies/QM1.policyxml
+----
+
+The properties specifies the release name, the required configurations as well the MQ properties such as the required queue name and MQEndPoint Policy file footnote:[The policy file is used to resolved the **MQ Instance** that hosts the queue. The `check-queue` tasks queries this **MQ Instance** to check whether the queue exists on the instance]. 
+
+It also specifies the application names that are to be part of this Integration Server. Mutliple application names can be specified.
+
+The task makes use of link:https://mikefarah.gitbook.io/yq/[`yq`] command to extract out properties. We build a custom container image that include `yq` (version 3). See link:custom-images/yq-zip[] 
+
+The task emits the properties as task results. Subsequent tasks can make use of the properties from the results.
+
+==== [[generate-bar]] Generate Bar (link:custom-tasks/generate_bar.yaml[generate_bar.yaml])
+
+[cols="1,3,4"]
+|===
+| Type | Name | Description
+
+| Workspace
+| `input`
+| The workspace
+
+.4+| Parameters
+
+| `is-source-directory` 
+| Subfolder within the workspace where **Source Repository** is cloned into. The message flows are maintained in this repository.
+
+| `is-application-names`
+| Names of the applications to be part of the BAR file
+
+| `bar-location`
+| Directory where the BAR file will be created
+
+| `bar-filename`
+| Name of the bar file
+
+|===
+
+The ACE Toolkit program, `mqsicreatebar`, can be used to create a BAR from ACE project. Within the container, the toolkit program need to run in headless mode. 
+
+We have docker image that runs the `mqsicreatebar` command in headless mode. See link:custom-images/mqsicreatebar[mqsicreatebar] how to create the docker image.
+
+The task makes use of `ace-applications` and `release-name` which are emiited from the `resolve-props` tasks.
+
+[NOTE]
+====
+The task invokes `mqsicreatebar` as a script. In theory it should be possible to make use of array type parameters to pass in application names to the `mqsicreatebar` program. But as of now, we do not know how pass a task result as a array. If we can figure this out, then the task can be make use of `cmd` and `args` instead of `script`.
+====
+
+The BAR created will be placed on the workspace, `shared-workspace`, under `bars` sub-folder.
+
+
+==== [[deploy-config]] Deploy Config (link:custom-tasks/deploy_config.yaml[deploy_config.yaml])
+
+[cols="1,3,5"]
+|===
+| Type | Name | Description
+
+| Workspace
+| `workspace`
+| The workspace
+
+.7+| Parameters
+
+| `is-config-directory` 
+| Subfolder within the workspace where **Configuration Repository** is cloned into. See <<Configuration>> for details.
+
+| `is-infra-directory`
+| Subfolder within the workspace where **Infrastructure Repository** is cloned into. Template for `Configuration` objects are maintained in this repository.
+ 
+| `is-configuration-keystores`
+| List of __keystore__ type `Configuration` objects to be created 
+
+| `is-configuration-trustores`
+| List of __truststore__ type `Configuration` objects to be created
+
+| `is-configuration-setdbparms`
+| List of __setdbparms__ type `Configuration` objects to be created
+
+| `is-configuration-serverconf`
+| List of __serverconf__ type `Configuration` objects to be created
+
+| `is-configuration-policyproject`
+| List of __Policy Project__ type `Configuration` objects to be created
+
+| Results
+| `configurations` | Stores the name of the Configuration objects created. 
+
+The list is used in either `deploy-is` or `deploy-is-awaiting-queue` task to deploy the `Integration Server` object.
+
+|===
+
+[NOTE]
+====
+As of now, the following types are supported:
+
+* keystore
+* truststore
+* setdbparms
+* serverconf
+* policyproject
+
+====
+
+The task, `deploy-config`, deploys the required configuration objects. It does this in two steps
+
+. Create the YAML files for the configurations
+. Apply the configurations
+
+===== Create the YAML files
+
+There are two kinds of configurations. Configurations that contain sensitive information and configurations that don't. Configurations that contains senstive information are not stored within a `Configuration` custom resource. Instead, they are stored in a `Secret` resource and a referrence is made on the `Configuration` object.
+
+Sensitive information includes TLS keystores and trustores, as well as password values that are set via `setbdparms`. 
+
+In this implementation of the pipeline, we have decided not to create the requried TLS keystores and trustores as `Secret` objects __during__ the execution of the pipeline. Instead, we assume Infrastructure team is responsible creating for the `Secret` objects. When a `Configuration` object is neeed for TLS keystores and trustores, only the `Configuration` object will be created - referring to a `Secret` of the same name.
+
+[NOTE]
+====
+During the application of the configuration YAML file (with `oc apply` command) if a `Configuration` object refers to a `Secret` that does not exists, the attempt will fail.
+
+It is expected that the **Infrasture** team then goes ahead and creates the required `Secrets` and re-launch the pipeline.
+====
+
+On the other hand, sensitive information in `setdbparams` is created as `Secret` by this task footnote:[Ok, may be this too should not be created]. The `Configuration` object is created, and it refers to the created `Secret`.
+
+For non-senstive configurations, such as __serverconf__ and __policy projects__, the contents are stored as part of the `Configuration` object. Certain configrations, such as `policy projects` and loopback's `datasource` need to be stored in ZIP format. Contents are stored in Base64 format. 
+
+ifdef::env-github[]
+++++
+<p align="center">
+  <img src="readme_images/setup_config.svg">
+</p>
+++++
+endif::[]
+ifndef::env-github[]
+image::readme_images/setup_config.svg[align="center"]
+endif::[]
+
+The step, `setup-configuration`, of the `deploy-config`, creates all the required YAML files for configurations. The template for the `Configuration` objects are maintained in the **Infrastructure Repository**, whereas the content is maintained in the **Configurattion Repository**. These repositories are cloned by the tasks `clone-is-infra` and `clone-is-config` tasks on the shared workspace, on directories specified by `is-infra-directory` and `is-config-directory`
+
+The needed configuraions are passed on to the task via the parameters:
+
+* is-configuration-keystores
+* is-configuration-truststores
+* is-configuration-setdbparms
+* is-configuration-serverconf
+* is-configuration-policyproject
+
+which are set from the results of `resolve-props`.
+
+
+The configurations are stored in a sub-folder, `configurations`, under the shared workspace. During the process of creating the `Configuration` objects, a variable maintained with the names of the configurations. The variable is emitted as a result, `configurations`, which subsequently used in the tasks, `deploy-is` or `deploy-is-awiting-queue`.
+
+===== Apply the configuration
+
+Apply is simply done with the `oc apply` command, passing the `configurations` sub-folder within the workspace.
+
+==== [[deploy-is]] Deploy Integration Server (link:custom-tasks/deploy-is.yaml[deploy_is.yaml])
+
+[cols="1,3,5"]
+|===
+| Type | Name | Description
+
+| Workspace
+| `input`
+| The workspace
+
+.4+| Parameters
+
+| `is-infra-directory` 
+| Subfolder within the workspace where **Infrastructure Repository** is cloned into. 
+
+| `IMAGE` 
+| Fully qualified name of the custom image
+
+| `release-name` 
+| Name of the release the `Integration Server` be deployed as.
+
+| `configurations` 
+| Configurations that are part of the `Integration Server` to be deployed.
+
+|===
+
+
+The task is responsible to creating the `Integration Server` custom resource. This is done with in two steps:
+
+. Create the `Integration Server` manifest
+
+. Apply the `Integration Server` manifest
+
+=====  Create the `Integration Server` manifest
+
+The `Integration Server` manifest is created on the workspace (under a directory named, `integration_server`). The template for the manifest is maintained in the **Infrastructure Repository**.
+
+`yq` is used to modify the manifest file to inject the release name, image name and the configurations. `yq` is from the custom image, `yq-zip` (see link:custom-images/yq-zip[yq-zip])
+
+=====  Create the `Integration Server` manifest
+
+Done by simply running `oc apply` on the manifest.
+
+
+[NOTE]
+.Why not use OpenShift Template
+====
+
+It is possible to use OpenShift Template do achieve this task - all in one step. But the configuration list is of array type. To render an OpenShift template with array type, a valid JSON array need to passed in as a parameter to the template. See this answer and the comment here: link:https://stackoverflow.com/a/51727041/837530[OpenShift templates with array parameters].
+
+When configuration list are coming from another task as a result (in our case `deploy-config`, with result `configuration`), this will require additional work needed to convert a list to a valid JSON array. Although this is possible footnote:[We have tried it], doing it in a script is cumbersome and not readable.
+
+Instead, doing with `yq` (can do the same with `jq`) is much more clean, readable and perhaps more maintainable.
+====
+
+==== [[check-queue]] Check whether queue exists (link:custom-tasks/check-queue.yaml[check-queue.yaml])
+
+[cols="1,3,5"]
+|===
+| Type | Name | Description
+
+| Workspace
+| `input`
+| The workspace
+
+.5+| Parameters
+
+| `mq-end-point-policy-file` 
+| Path to the MQ EndPoint policy. This details the connections to the **MQ Instance**. 
+
+| `mq-queue-name` 
+| Name of the queue to check for.
+
+| `is-config-directory` 
+| Name of the sub-folder where **Configuration Repository** is cloned onto.
+
+| `number-of-retries` 
+| When queue is not found, how many retries to attempt. Default is "0"
+
+| `exit-on-fail` 
+| Whether or not the task should fail (with exit code), when the queue does not exists. Default is "no"
+
+
+| Results
+| `queue-exists`
+| Set to "yes" if queue exists, "no" otherwise.
+
+|===
+
+A set of `oc` command is executed to check for the required queue on the **MQ Instance**.
+
+The  **MQ Instance** is resolved from the MQ End Point policy used by the Integration Server. The policy is an XML file, so a XPATH query is carried out to fetch the queue manager hostname. Thereafter, the namespace and service name is resolved.
+
+From the service name, the release name of the **MQ Instance** is resolved using `oc` command. Since the **MQ Instance** could be a Multi-instance queue manager, `dspmq` command is executed on the queue manager pod, using `oc exec` - to figure out the active queue manager.
+
+On the active queue manger, search for the required queue is performed.
+
+This task is used both in `check-queue` and `wait-for-queue` task run on the pipeline. 
+
+When running as the `check-queue` task run, no retries are done on failure to find the queue. Morever, task is not `exit`ed. The result is set to "no" or "yes" depending on the result of the search for the queue.
+
+If the task is run for `wait-for-queue`, re-tries are done on failure to find the queue. Number of retries are depends on the `number-of-retries` parameter. `exit-on-fail` is also set to "yes" - this way, if queue is not found after the desired re-tries, the task is failed.
+
+[NOTE]
+====
+The serveraccount used for the pipeline (`pipeline`), may require additional permissions to run `oc` commands on if the **MQ Instance** is located on a different namespace. See link:roles[] for examples on how to grant permissions.
+====
+
+==== [[commit-mqsc]] Commit MQSC on to the MQ Config Repository (link:custom-tasks/commit_mqsc.yaml[commit_mqsc.yaml])
+
+
+
+
+
+[cols="1,3,5"]
+|===
+| Type | Name | Description
+
+| Workspace
+| `input`
+| The workspace
+
+.5+| Parameters
+
+| `is-source-mqsc-path` 
+| Path to the config.mqsc file that defines the queue, if it does not exists.
+
+| `mq-queue-name` 
+| Name of the queue to check for.
+
+| `mq-config-mqsc-path` 
+| Path where the `config.mqsc` to be copied to. This refers to a path with the **MQ Config Repository** cloned by `clone-mq-config` task.
+
+| `uid` 
+| Pipeline Id. Used in `user.name` set for git commit
+
+| `sshPrivateKey` 
+| Name of the private key to use for `git push` command
+
+|===
+
+This task is responsible to commiting the `config.mqsc` file to the **MQ Config Repository**. The file is renamed by prepending a timestamp on it, so that during configuration, the MQ container proccesses it last.
+
+Dummy email address is used by the commiting git user. The pipeline UID is used as username.

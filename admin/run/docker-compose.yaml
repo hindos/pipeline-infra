@@ -1,0 +1,13 @@
+version: "3.7"
+
+services:
+  cp4i-builder:
+    build:
+      context: .
+    working_dir: /run
+#    environment:
+#      - LICENSE=accept
+#      - MQCCDTURL=/client-volume/ccdt.json
+#      - MQSAMP_USER_ID=app
+    volumes:
+      - ../:/run

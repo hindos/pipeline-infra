@@ -1,0 +1,182 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: mq-build
+  labels:
+    build: mq-build
+spec:
+  workspaces:
+    - name: shared-workspace
+
+  params:
+    - name: infra-git-url
+      type: string
+      description: url of the git repo for the code of deployment
+    - name: infra-subdirectory
+      type: string
+      description: directory where the content will be checkout to
+      default: infra
+    - name: infra-sshPrivateKey
+      description: the private key to use
+      type: string
+
+    - name: source-git-url
+      type: string
+      description: url of the git repo for the code of deployment
+    - name: source-subdirectory
+      type: string
+      description: directory where the content will be checkout to
+      default: source
+    - name: source-sshPrivateKey
+      description: the private key to use
+      type: string
+
+    - name: IMAGE
+      default: image-registry.openshift-image-registry.svc:5000/$(context.pipelineRun.namespace)/$(context.pipeline.name):$(tasks.fetch-source.results.commit)
+
+    - name: DOCKERFILE
+      type: string
+      default: $(workspaces.source.path)/infra/image/Dockerfile
+    - name: CONTEXT
+      type: string
+      default: $(workspaces.source.path)/cqm5/mqsc
+      description: build context
+    - name: MQ_SERVER_KEY_CERT_SECRET
+      type: string
+      description: Name of the secret containing the MQ cert in the namespace where MQ is being deployed
+      #default: mq-server-cert-default
+
+    - name: qm-template-path
+      type: string
+      description: The path where the Queue Manger template is located'
+      default: $(workspaces.source.path)/infra/templates/qm-template.yaml
+    - name: DEPLOYMENT_PROPERTIES_PATH
+      type: string
+      description: The path where the deployment properties is located
+      default: $(workspaces.source.path)/source/deployment-properties/deployment.properties
+    - name: queue-name
+      type: string
+      default: "TEST.QUEUE.V1"
+
+    - name: ca-cert-secret
+      type: string
+      description: Name of the secret containing the CA cert in the namespace where MQ is being deployed
+      default: ca-cert-secret-default
+
+    - name: MQ_SERVER_CERT_KEY
+      type: string
+      description: Key of the MQ certificate within the secret
+    - name: MQ_SERVER_KEY_KEY
+      type: string
+      description: Key of the MQ key cert within the secret
+    - name: CA_CERT_KEY
+      type: string
+      description: Key of the CA cert within the secret
+    - name: TRACING_NS
+      type: string
+      description: Namespace of the operations dashboard to use
+
+
+  tasks:
+    - name: fetch-infra
+      taskRef:
+        name: git-clone
+        kind: Task
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+      params:
+        - name: url
+          value: $(params.infra-git-url)
+        - name: subdirectory
+          value: $(params.infra-subdirectory)
+        - name: deleteExisting
+          value: "true"
+        - name: revision
+          value: "master"
+        - name: sshPrivateKey
+          value: $(params.infra-sshPrivateKey)
+
+    - name: fetch-source
+      taskRef:
+        name: git-clone
+        kind: Task
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+      params:
+        - name: url
+          value: $(params.source-git-url)
+        - name: subdirectory
+          value: $(params.source-subdirectory)
+        - name: deleteExisting
+          value: "true"
+        - name: revision
+          value: "master"
+        - name: sshPrivateKey
+          value: $(params.source-sshPrivateKey)
+        - name: verbose
+          value: "true"
+
+    - name: build-mq-image
+      taskRef:
+        name: buildah
+        kind: ClusterTask
+      params:
+        - name: TLSVERIFY
+          value: "false"
+        - name: IMAGE
+          value: $(params.IMAGE)
+        - name: DOCKERFILE
+          value: $(params.DOCKERFILE)
+        - name: CONTEXT
+          value: $(params.CONTEXT)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      runAfter:
+        - fetch-source
+        - fetch-infra
+
+    - name: deploy-mq
+      taskRef:
+        name: deploy-mq
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      params:
+        - name: qm-template-path
+          value: $(params.qm-template-path)
+        - name: image
+          value: $(params.IMAGE)
+        - name: deployment-properties-path
+          value: $(params.DEPLOYMENT_PROPERTIES_PATH)
+        - name: ca-cert-secret
+          value: $(params.ca-cert-secret)
+        - name: mq-server-key-cert-secret
+          value: $(params.MQ_SERVER_KEY_CERT_SECRET)
+        - name: mq-server-cert-key
+          value: $(params.MQ_SERVER_CERT_KEY)
+        - name: mq-server-key-key
+          value: $(params.MQ_SERVER_KEY_KEY)
+        - name: ca-cert-key
+          value: $(params.CA_CERT_KEY)
+        - name: tracing_ns
+          value: $(params.TRACING_NS)
+      runAfter:
+        - build-mq-image
+
+    - name: smoke-test
+      taskRef:
+        kind: Task
+        name: smoke-test
+      workspaces:
+      - name: source
+        workspace: shared-workspace
+      params:
+      - name: deployment-properties-path
+        value: $(params.DEPLOYMENT_PROPERTIES_PATH)
+      - name: queue-name
+        value: $(params.queue-name)
+      runAfter:
+        - deploy-mq

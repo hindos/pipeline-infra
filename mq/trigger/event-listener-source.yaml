@@ -1,0 +1,11 @@
+apiVersion: triggers.tekton.dev/v1alpha1 
+kind: EventListener 
+metadata:
+  name: mq-build-source
+spec:
+  serviceAccountName: pipeline
+  triggers:
+  - bindings: 
+    - ref: mq-build-source
+    template: 
+      name: mq-build

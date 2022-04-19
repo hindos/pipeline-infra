@@ -1,0 +1,151 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy-mq
+spec:
+  workspaces:
+  - name: source
+  params:
+  - name: qm-template-path
+    type: string
+    description: The path where the Queue Manger template is
+  - name: image
+    description: image name of the MQ instance
+    type: string
+  - name: deployment-properties-path
+    type: string
+    description: The path where the deployment properties is located
+  - name: mq-server-key-cert-secret
+    type: string
+    description: Name of the secret containing the MQ cert in the namespace where MQ is being deployed
+  - name: ca-cert-secret
+    type: string
+    description: Name of the secret containing the CA cert in the namespace where MQ is being deployed
+  - name: mq-server-cert-key
+    type: string
+    description: Name of the secret containing the MQ cert in the namespace where MQ is being deployed
+  - name: mq-server-key-key
+    type: string
+    description: Name of the secret containing the MQ cert in the namespace where MQ is being deployed
+  - name: ca-cert-key
+    type: string
+    description: Name of the secret containing the CA cert in the namespace where MQ is being deployed
+  - name: tracing_ns
+    type: string
+    description: Namespace of the tracing Ops Dashboard to use
+  steps:
+    - name: apply-qm-template
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: /workspace/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          echo Applying template $(params.qm-template-path)
+          
+          oc process -f $(params.qm-template-path) \
+            --param IMAGE=$(params.image) \
+            --param-file $(params.deployment-properties-path) \
+            -p MQ_SERVER_KEY_CERT_SECRET=$(params.mq-server-key-cert-secret) \
+            -p CA_CERT_SECRET=$(params.ca-cert-secret) \
+            -p CA_CERT_KEY=$(params.ca-cert-key) \
+            -p MQ_SERVER_KEY_KEY=$(params.mq-server-key-key) \
+            -p MQ_SERVER_CERT_KEY=$(params.mq-server-cert-key) \
+            -p TRACING_NS=$(params.tracing_ns) \
+             | oc apply -f -
+
+    - name: check-for-stateful-set
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: /workspace/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          sscount="0"
+          maxsscount="60"
+
+          echo "May sleep for up to 10 minutes to wait for stateful set to be created"
+
+          # Source in environment variables from file to get release name
+          source $(params.deployment-properties-path)
+
+          echo "Release is: $RELEASE_NAME"
+
+          while [ $sscount -lt $maxsscount ]
+          do
+            statefulset_name=`oc get StatefulSet --selector=app.kubernetes.io/instance=$RELEASE_NAME -o custom-columns=:metadata.name --no-headers`
+            echo "Stateful set is : $test"
+            if [[ -z ${statefulset_name} ]]
+            then
+                if [ "$sscount" -eq $(($maxsscount -1)) ]
+                then
+                  echo "Stateful set not ready. After $sscount attempts."
+                  exit 1
+                fi
+                echo "Stateful set not ready yet, sleep for 10 seconds."
+                sleep 10;
+            fi
+            sscount=$[$sscount+1]
+          done
+
+          echo "MQ stateful set $statefulset_name for release $RELEASE_NAME created."
+    
+    - name: od-registration
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: /workspace/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+
+          # Check the secret has a value in username
+          oduser=$(oc get secret icp4i-od-store-cred -o jsonpath='{$.data.username}'| base64 -d)
+          echo "oduser is $oduser"
+          if [[ $oduser =~ "empty" ]]; then
+
+            # Source in environment variables from file to get release name
+            source $(params.deployment-properties-path)
+            
+            echo "Will apply the OD Service Binding for namespace"
+
+            # Get the release name
+            echo "Release name is: $RELEASE_NAME"
+
+            # Get the pod name
+            podname=$(oc get pods --selector=app.kubernetes.io/instance=$RELEASE_NAME -o custom-columns=POD:.metadata.name --no-headers | head -n 1)
+            echo "Pod name is: $podname" 
+            # get the OD name from tracing ns
+            odinstance=$(oc get operationsdashboard -n tracing | tail -1 | awk '{print $1}')
+            echo "OD instance is: $odinstance"
+            # Apply the OD Service Binding
+            rm odsb.yaml
+            touch odsb.yaml
+            echo "apiVersion: integration.ibm.com/v1beta2" >> odsb.yaml
+            echo "kind: OperationsDashboardServiceBinding" >> odsb.yaml
+            echo "metadata:" >> odsb.yaml
+            echo "  name: od-service-binding" >> odsb.yaml
+            echo "spec:" >> odsb.yaml
+            echo "  odNamespace: $(params.tracing_ns)" >> odsb.yaml
+            echo "  sourceInstanceName: $RELEASE_NAME" >> odsb.yaml
+            echo "  sourcePodName: $podname" >> odsb.yaml
+            echo "  sourceSecretName: icp4i-od-store-cred" >> odsb.yaml
+
+            pwd
+            ls -lrt
+            ls -lrt odsb.yaml
+            cat odsb.yaml
+
+            oc apply -f odsb.yaml
+
+            sleep 5
+
+            # get the status and check it is OK
+            odsbstatus=$(oc get OperationsDashboardServiceBinding od-service-binding -o jsonpath='{$.status.phase}')
+            if [[ ! $odsbstatus =~ "Ready" ]]; then
+              echo "OD Service binding object not in 'Ready' state."
+              echo "Step will fail"
+              exit 78;
+            fi
+          fi
+
+          echo "OD secret icp4i-od-store-cred already created."
+          echo "User ID in OD secret icp4i-od-store-cred is $oduser"
+
+

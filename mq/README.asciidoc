@@ -1,0 +1,109 @@
+= MQ Tekton Pipeline
+:toc:
+:source-highlighter: pygments
+:toclevels: 4
+
+This documentation describes a Tekton based pipeline that builds and deploys an MQ image.
+
+
+== Repositories
+Based on the seperation of concerns for MQ deployments, there are 2 repositories this pipeline makes use of.
+
+Infrastructure::
+The infrastructure repo contains the Dockerfile definition for the MQ image as well as the template for the QueueManager which will make use of this image.
+
+Source::
+The source repository contains the source code of MQSC files used for the queues as well as a deployment-properties file which lists some properties that to test on the queue manager 
+deployment.
+
+== Pipeline
+
+=== Overview
+
+The pipeline can be depicted as:
+
+image::readme_images/pipeline.png[align="center"]
+
+There are a number of tasks within this pipeline which have dependencies on other tasks being completed. For example, `smoke-test` is reliant on `deploy-mq` which is reliant on `build-mq-image` which is reliant on both `fetch-source` and `fetch-infra`.
+
+The general flow of the pipeline is as follows:
+
+. Clone the infra and source repos
+. Build the mq image and push image to repository
+. Deploy the image using the template 
+. Run some smoke tests to see if the queue is up
+
+=== The workspace
+
+We are going to use a single workspace, `shared-workspace`. All the tasks will make use of this shared workspace, but may only read/write from/to a sub-folder within the workspace.
+
+=== The Tasks
+
+==== Git Clone (link:./custom-tasks/git-clone.yaml[git-clone.yaml])
+
+We need to clone multiple repositories (Infrastructure, Source) in this pipeline. For each repository we use a unique SSH keypair. The approach is explained here: link:https://www.openshift.com/blog/private-git-repositories-part-2a-repository-ssh-keys[Repository SSH Keys].
+
+For each repository we upload the public key as Deploy Key. We create a secret with the private key as decribed here: link:https://github.com/tektoncd/pipeline/blob/master/docs/auth.md#configuring-ssh-auth-authentication-for-git[Configuring `ssh-auth` authentication for Git]. We have a template for the secret which can be used for this purpose, see link:../admin/ssh-key-secret.yaml[ssh-key-secret.yaml]
+
+The service account that runs the pipeline (in our case `pipeline`) needs to refer to the secrets that contains the private keys of the repositories. Since we are to clone multiple repositories, we need to set multiple secrets. But this causes a problem for the `git-clone` cluster task, link:https://github.com/tektoncd/catalog/tree/master/task/git-clone/0.2[tektoncd/catalog/git-clone]. 
+
+The `git-clone` cluster task, which is available by default in OpenShift pipeline, seems to use the first private key it finds under `~/.ssh`. If we use the cluster task as is, then only one of our repository gets successfully cloned. The rest fails with ssh key error.
+
+To remedy, we use a modified version of the `git-clone` cluster task, see link:https://github.com/saadlu/catalog/commit/8c731b5f9a903af12989296f9e35c847d4262852[fork of `git-clone`]. We added a parameter that names the private key to use. If the parameter is specified, we start and add the key in a `ssh-agent`. Note that this is a hack solution - and at the time the simpliest one we can think of. 
+
+[NOTE]
+====
+We might want to take a look at the Go program of the `git-init` task: link:https://github.com/tektoncd/pipeline/blob/master/cmd/git-init/main.go[git-init/main.go]. And investigate if there is an approach to set the private key in the `git` package: link:https://github.com/tektoncd/pipeline/blob/master/pkg/git/git.go[git.go]
+====
+
+All of the `git-clone` tasks writes to the same workspace, `shared-workspace`, but on a different sub-folder.
+
+==== Build MQ image
+To build the MQ image we use the link:https://github.com/tektoncd/catalog/tree/master/task/buildah/0.2[Buildah Cluster task]. All that is required here is to pass in a number of parameters:
+. The image name and tag
+. The dockerfile path
+. The build context
+
+And buildah will handle building the image.
+
+==== Deploy MQ (link:./custom-tasks/deploy-mq-task.yaml[deploy-mq-task.yaml])
+
+The Deploy MQ task takes the image created in the previous step, processes it with the template provided in the infrastructure repo and then applies this to the cluster.
+
+==== Smoke Test (link:./custom-tasks/smoke-test.yaml[smoke-test.yaml])
+
+This task runs a number of smoke tests. 
+
+The first test here checks for the StatefulSets and checks whether the Pods for MQ have been deployed.
+
+The second and third test then put and get messages from the deployed queue.
+
+=== Trigger
+
+We use a trigger to automatically kick off a pipeline run based on push changes made to the mq source repo. To do this, we use a number of files:
+
+* `trigger-template.yaml`
+* `event-listener-source.yaml`
+* `trigger-binding-source.yaml`
+
+==== Trigger Template (link:./trigger/trigger-template.yaml[trigger-template.yaml])
+
+The trigger template is used as a template to create a pipeline run.
+
+First, we provide parameters which will be passed in by the `trigger-binding-source.yaml`. These are parameters for the github repo which will trigger the PipelineRun
+
+Next, we have the resource template where we define the PipelineRun, which is identical to the PipelineRun we defined earlier.
+
+==== Event Listener Source (link:./trigger/event-listener-source.yaml[event-listener-source.yaml])
+
+The event listener links the `trigger-template` with the `trigger-binding-source` to pass in parameters required. 
+
+The event listener also creates a service and provides a url for you to use to create a webhook from Github.+
+
+This also defines the service account the trigger will use when running the pipeline.
+
+==== Trigger Binding Source (link:./trigger/trigger-binding-source.yaml[trigger-binding-source.yaml]) 
+
+When a change is made to Github, the webhook will post some details to the event listener. 
+
+The Trigger Binding then picks out, from the body of the message, some details to pass into the triggered pipeline (in this case, the repo url and the repo name)

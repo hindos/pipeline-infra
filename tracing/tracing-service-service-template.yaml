@@ -1,0 +1,22 @@
+apiVersion: integration.ibm.com/v1beta2
+kind: OperationsDashboardServiceBinding
+metadata:
+  name: od-service-binding
+spec:
+  odNamespace: "tracing"
+  odInstanceName: "cp4i-od-dev"
+  sourceInstanceName: "tracing-test-02"
+  sourcePodName: "tracing-test-02-ibm-mq-0"
+  sourceSecretName: "icp4i-od-store-cred"
+
+
+apiVersion: integration.ibm.com/v1beta2
+kind: OperationsDashboardServiceBinding
+metadata:
+  name: od-service-binding
+spec:
+  odNamespace: "tracing"
+  odInstanceName: "cp4i-od-dev"
+  sourceInstanceName: "server-ping-01"
+  sourcePodName: "server-ping-01-is-696d8f9964-jdwsm"
+  sourceSecretName: "icp4i-od-store-cred"

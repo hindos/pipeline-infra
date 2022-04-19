@@ -1,0 +1,23 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: generate-bar
+spec:
+  params:
+    - name: is-source-directory
+    - name: is-application-names
+    - name: bar-location
+    - name: bar-filename
+  steps:
+  - name: generate-bar
+    image: image-registry.openshift-image-registry.svc:5000/$(context.taskRun.namespace)/mqsicreatebar:latest
+    script: |
+      rm -rf $(params.bar-location)
+      mkdir -p $(params.bar-location)
+      mqsicreatebar.sh \
+        -data $(workspaces.workspace.path)/$(params.is-source-directory) \
+        -a $(params.is-application-names) \
+        -b $(params.bar-location)/$(params.bar-filename) -skipWSErrorCheck
+
+  workspaces:
+    - name: workspace

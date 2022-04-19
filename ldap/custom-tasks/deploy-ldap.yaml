@@ -1,0 +1,44 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy-ldap
+spec:
+  workspaces:
+  - name: source
+  params:
+  - name: ldap-yaml-path
+    type: string
+    description: The path where the Queue Manger template is
+  - name: image
+    description: image name of the LDAP instance
+    type: string
+  steps:
+    - name: apply-oc-objects
+      image: quay.io/openshift/origin-cli:latest
+      workingDir: /workspace/source
+      command: ["/bin/bash", "-c"]
+      args:
+        - |-
+          echo "DEPLOY LDAP SERVER"
+          oc create -f $(params.ldap-yaml-path)/ldap-deployment.yaml -n ldap
+          
+          echo "DEPLOY LDAP SERVICE"
+          oc create -f $(params.ldap-yaml-path)/ldap-service.yaml -n ldap
+
+          echo "LDAP SERVICE SHOULD BE AVAILABLE ON ldap-service.ldap PORT 389 and 636"
+
+          echo "Connection credentials"
+
+          service_name="$(oc get svc ldap-service --no-headers -o custom-columns=POD:.metadata.name -n ldap)"
+          #baseDomain="$(oc get dns cluster -o go-template --template='{{.spec.baseDomain}}' -n ldap)"
+          nodePort="$(oc get svc ldap-service -o jsonpath='{.spec.ports[?(@.port==389)].nodePort}' -n ldap)"
+
+          echo "$service_name"."$baseDomain":"$nodePort"
+
+          echo bindDn "cn=admin,dc=ibm,dc=com"
+          echo password "admin"
+
+          echo "To list all ldap users"
+          echo "ldapsearch -x -h $service_name.$baseDomain:$nodePort -b dc=ibm,dc=com -D 'cn=admin,dc=ibm,dc=com' -w admin"
+
+

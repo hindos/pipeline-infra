@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: LDAPPipelineRun
+  annotations:
+    description: |
+      To create a pipeline that deploys a MQ instance
+objects:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      name: ${NAME}
+      namespace: ${NAMESPACE}
+    spec:
+      serviceAccountName: pipeline
+      pipelineRef:
+        name: ${PIPELINE_REFERENCE}
+
+      params:
+        - name: ldap-git-url
+          value: ${LDAP_GIT_URL}
+        - name: ldap-sshPrivateKey
+          value: ${LDAP_SSH_PRIVATE_KEY_SECRET_NAME}
+        
+      workspaces:
+        - name: shared-workspace
+          persistentVolumeClaim:
+            claimName: ${PERSISTENT_VOLUME_CLAIM_NAME}
+
+parameters:
+  - name: NAME
+    description: Name of pipeline run
+  - name: NAMESPACE
+    description: Namespace to apply this pipeline run to
+  - name: PIPELINE_REFERENCE
+    description: Name of the pipeline
+  - name: LDAP_GIT_URL
+    description: SSH URL of the MQ Infrastructure repository
+  - name: LDAP_SSH_PRIVATE_KEY_SECRET_NAME
+    description: |
+      Name of the secret that contains the private key of corresponding 
+      deploy key for the LDAP repository 
+  - name: PERSISTENT_VOLUME_CLAIM_NAME
+    description: Name of the persistence volume used by the pipeline

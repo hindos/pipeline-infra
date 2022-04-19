@@ -1,0 +1,238 @@
+= `mqsicreatebar` docker image
+:icons: font
+:toc:
+:experimental:
+:source-highlighter: highlightjs
+
+Inspired by
+
+* link:https://developer.ibm.com/recipes/tutorials/building-cicd-piepeline-for-ibm-app-connect-enterprise-on-cloud-pak-for-integration/[Building CI-CD Pipeline for IBM App Connect Enterprise on Cloud Pak for Integration]
+
+* link:https://github.com/ot4i/ace-docker[https://github.com/ot4i/ace-docker]
+
+== The docker image
+
+The image is based on **ACE for Developer** edition. The docker image build process is based on link:https://github.com/ot4i/ace-docker#build-an-image-with-app-connect-enterprise-only[Build an image with App Connect Enterprise only]. The link:Dockerfile[] we use is much simpler and it does not remove the toolkit programs.
+
+It sets up a `ENTRYPOINT` for the `mqsicreatebar` command link:mqsicreatebar.sh[]. We we will run this command in headless mode, and therefore the entrypoint starts a the X virtual framebuffer with `Xvfb` as a background job. The command arguments for the container is then passed to the `mqsicreatebar` command.
+
+== Build the image
+
+Download a copy of __Linux install image__ of **ACE for Developer**, from link:https://www.ibm.com/marketing/iwm/iwm/web/pick.do?source=swg-wmbfd[ACE for Developer]. 
+
+Clone this repo. Copy the install image in the `deps` folder. For example, if downloaded version `11.0.0.10` of **ACE for Developer**, your workspace should look like this:
+
+[source,bash,]
+----
+$ tree .
+.
+├── Dockerfile
+├── README.asciidoc
+├── deps
+│   └── 11.0.0.10-ACE-LINUX64-DEVELOPER.tar.gz
+└── mqsicreatebar.sh
+----
+
+The `Dockerfile` takes a build argument, `ACE_INSTALL`, to refer to the install image within the `deps` folder. To build the image, you can run:
+
+[source,bash]
+----
+$ docker build -t mqsicreatebar:11.0.0.10 \
+        --build-arg ACE_INSTALL=11.0.0.10-ACE-LINUX64-DEVELOPER.tar.gz .
+----
+
+== Smoke Test it out
+
+Once the the docker image is built, you can run the container without any command. This will in turn run `mqsicreatebar` without any argument. This will display the usage information for the command.
+
+Running
+
+[source,bash]
+----
+$ docker run mqsicreatebar:11.0.0.10
+----
+
+should output:
+
+[source,bash]
+----
+docker run mqsicreatebar:11.0.0.10
+Executing mqsicreatebar
+BIP0955I Compile a BAR file from source.
+Syntax: mqsicreatebar -data workspace -b barName [-version id] [-esql21]
+        [-p projectName [...]] [-o filePath1 [filePath2 [...]]]
+        [-a applicationName [...]] [-l libraryName [...]] [-x PolicyProjectName [...]] [-skipWSErrorCheck]
+        [-deployAsSource] [-compileOnly] [-trace] [-v traceFilePath]
+Command Options:
+'-data workspace' workspace location (Mandatory)
+'-b barName' bar file name to create or replace
+'-cleanBuild' refresh the workspace projects and perform a clean build before adding
+'-version id' appends '_' and id to compiled names in the archive (optional)
+'-esql21' compile ESQL for integration nodes version 2.1 (optional)
+'-p projectName' specify projects containing files to link (optional, multiple
+        projects can be specified)
+'-o filePath1' workspace relative path (including the project) of deployable
+        files to add to the BAR. Multiple deployable files can be
+        compiled in a single mqsicreatebar command. (optional)
+'-a applicationName' specify application projects containing files to link
+        (optional, multiple projects can be specified)
+'-l libraryName'  specify library projects containing files to link
+        (optional, multiple projects can be specified)
+'-x PolicyProjectName'  specify Policy projects containing files to link
+        (optional, multiple projects can be specified)
+'-d .NETApplicationDomainName' specify .NET application domain projects containing files to link
+        (optional, multiple projects can be specified)
+'-skipWSErrorCheck' to ignore the workspace error that is not related to the
+        required content to be put in the archive file (optional)
+'-trace' to display trace information for the command
+'-deployAsSource' to deploy resources without compilation (if applicable)
+'-compileOnly' to compile workspace projects for the msqipackagebar command
+'-v traceFilePath' to specify output log file name or path where the tracing data will be written to.
+        It is applicable only if the -trace option is set. If only file name or relative path is
+        specified then the file will be written to the default working directory.
+
+----
+
+== Functional test it out
+
+To do a real test, we can create a ACE BAR file from the hello-world application, link:https://github.ibm.com/Mohammed-Mia/hello-world[]. This ACE application makes use of two ACE projects, 
+
+. `helloworld`, which is a simple RESTful Get API
+. `Hostname`, Java project to resolve the host name of the Integration Server
+
+The `helloworld` project uses a mapping node to call the Java project to resolve the hostname and outputs it on as the response to the Get call.
+
+We can run the functional test from the `/tmp` directory: 
+
+.Create the BAR file
+
+. Change working directory to `/tmp`
++
+[source,bash]
+----
+$ cd /tmp
+----
+
+. Clone the repo, link:https://github.ibm.com/Mohammed-Mia/hello-world[]
++
+[source,bash]
+----
+$ git clone https://github.ibm.com/Mohammed-Mia/hello-world
+----
+
+. Make a directory to keep the generated BAR
++
+[source,bash]
+----
+$ mkdir bars
+----
+
+. Run `mqsicreatebar` container to the build the BAR
++
+[source,bash]
+----
+$ docker run \
+    -v /tmp/hello-world:/hello-world \
+    -v /tmp/bars:/bars \
+    mqsicreatebar:11.0.0.10 \
+    -data /hello-world \
+    -a Hostname helloworld \
+    -b /bars/hello.bar \
+    -skipWSErrorCheck
+----
++
+We are mapping two host directories to the container:
++
+--
+. Host directory `/tmp/hello-world` to container directory, `/hello-world`, and
+. Host directory `/tmp/bars` to container directory, `/bars`
+--
++
+The `mqsicreatebar` command will create the BAR:
++
+--
+* With option `-data`, we are setting the workspace directory to `/hello-world` on the container. (The directory is is mapped to `/tmp/hello-world` on the host.)
+
+* With option, `-a`, we are compiling the projects, `Hostname` and `helloworld`. The project directory need to be relative to the workspace directory.
+
+* With option, `-b`, we are creating a bar file, `hello.bar`, to be placed in the `/bar` directory within the container. This will result a BAR file in `/tmp/bars` on the host filesystem.
+
+* With option, `-skipWSErrorCheck`, we are ignoreing workspace errors.
+--
++
+Once the container finishes, you will see the BAR file on the host machine:
++
+[source,bash]
+----
+$ ls -l /tmp/bars
+----
++
+should display
++
+[source,bash]
+----
+total 16
+-rw-r--r--  1 mohammed.miaibm.com  wheel  7429 30 Dec 16:21 hello.bar
+----
+
+.Deploy an Integration Server with the BAR file
+
+We can deplog an Integration Server with a `ibmcom/ace` container:
+
+[source,bash]
+----
+$ docker run \
+    -d \
+    --name test-ace \
+    -e LICENSE=accept \
+    -p 7800:7800 \
+    -v /tmp/bars:/home/aceuser/initial-config/bars \
+    ibmcom/ace:11.0.0.9-r1-amd64
+----
+
+We running the `ibmcom/ace:11.0.0.9-r1-amd64` container, mapping the `/tmp/bars` host directory on to the `/home/aceuser/initial-config/bars` on the container. This will deploy the Integration Server with the generated bar.
+
+You can check the log of the container with:
+
+[source,bash]
+----
+$ docker logs -f test-ace
+----
+
+which should show that the message flow has been deployed:
+
+[source,bash]
+----
+...
+.....2020-12-30 16:24:49.220224: .2020-12-30 16:24:49.220476: Integration server 'e5c82ebcc791' starting initialization; version '11.0.0.9' (64-bit)
+........................................2020-12-30 16:24:50.639896: About to 'Initialize' the deployed resource 'helloworld' of type 'RestAPI'.
+2020-12-30 16:24:52.852576: About to 'Start' the deployed resource 'helloworld' of type 'RestAPI'.
+An http endpoint was registered on port '7800', path '/helloworld*'.
+2020-12-30 16:24:52.864516: The HTTP Listener has started listening on port '7800' for 'http' connections.
+2020-12-30 16:24:52.864584: Listening on HTTP URL '/helloworld*'.
+Started native listener for HTTP input node on port 7800 for URL /helloworld*
+2020-12-30 16:24:52.864796: Deployed resource 'gen.helloworld' (uuid='gen.helloworld',type='MessageFlow') started successfully.
+..2020-12-30 16:24:53.696872: IBM App Connect Enterprise administration security is inactive.
+2020-12-30 16:24:53.707572: The HTTP Listener has started listening on port '7600' for 'RestAdmin http' connections.
+...
+----
+
+Press kbd:[Ctrl+C] to get out of the log. 
+
+We can test the message flow with:
+
+[source,bash]
+----
+$ curl --request GET \
+  --url http://localhost:7800/helloworld/hello \
+  --header 'accept: application/json'
+----
+
+which should display the following:
+
+[source,bash]
+----
+{"message":"hello world","host":"5af4b907aa76"}
+----
+
+This should be sufficient to prove that `mqsicreatebar` container is successfully building the BAR.
